@@ -1,98 +1,150 @@
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using Cinemachine;
 
 public class SpringArms : MonoBehaviour
 {
-      [Header("Camera Settings")]
-    [SerializeField] private float rotationSpeed = 2f;
-    [SerializeField] private float zoomSpeed = 5f;
-    [SerializeField] private float minZoomDistance = 2f;
-    [SerializeField] private float maxZoomDistance = 10f;
-    [SerializeField] private float smoothness = 10f;
+    [Header("References")]
+    [SerializeField] private InputManager inputManager;
+    [SerializeField] private CinemachineFreeLook freeLookVCam;
+    [SerializeField] private Camera mainCamera;
+    [SerializeField] private Transform playerTransform;
+
+    [Header("Settings Zoom")]
+    [SerializeField, Range(0.5f, 3f)] private float speedMultiplier = 1f;
+    [SerializeField, Range(20f, 80f)] private float minFOV = 30f;
+    [SerializeField, Range(60f, 120f)] private float maxFOV = 90f;
+    [SerializeField] private float zoomSpeed = 10f;
+
+    [Header("Settings RotationCam")]
+    [SerializeField] private float playerRotationSpeed = 5f; 
+    [SerializeField] private float transitionSpeed = 2f;
+
+    private bool isRMBPressed;
+    private bool isLMBPressed;
+    private bool cameraMovementLock;
+    private bool isResetting = false;
     
-    [Header("Spring Arm Settings")]
-    [SerializeField] private float springArmLength = 5f;
-    [SerializeField] private Vector3 targetOffset = new Vector3(0f, 2f, 0f);
-    
+
     private float currentZoom;
     private float targetZoom;
-    private Vector3 currentRotation;
-    private Vector3 targetRotation;
-    private Transform cameraTransform;
-    private bool isRotating = false;
-    
+
     private void Start()
     {
-        // Initialize camera
-        cameraTransform = Camera.main.transform;
-        currentZoom = springArmLength;
-        targetZoom = springArmLength;
-        
-        // Set initial position
-        UpdateCameraPosition();
+        inputManager = GameController.Instance.GetComponentManager<InputManager>();
+        freeLookVCam = FindObjectOfType<CinemachineFreeLook>();
+
+        targetZoom = freeLookVCam.m_Lens.FieldOfView;
+
+        GameObject obj = GameObject.FindWithTag("Player");
+        playerTransform = obj.transform;
+
+        GameObject objCamera = GameObject.FindWithTag("MainCamera");
+        mainCamera = objCamera.GetComponent<Camera>();
     }
-    
+
     private void Update()
     {
-        HandleInput();
-        UpdateCameraTransform();
+        isRMBPressed = (Mouse.current != null) ? Mouse.current.rightButton.isPressed : Input.GetMouseButton(1);
+        isLMBPressed = (Mouse.current != null) ? Mouse.current.leftButton.isPressed : Input.GetMouseButton(0);
+
+        Vector2 lookInput = inputManager.delta;
+
+        OnLook(lookInput, true);
+        HandleCursorLock();
+        HandleZoom();
+        HandleRotationPlayerAndCamera(lookInput);
     }
-    
-    private void HandleInput()
+
+    private void OnLook(Vector2 cameraMovement, bool isDeviceMouse)
     {
-        // Right mouse button for rotation
-        if (Input.GetMouseButton(1))
+        if (cameraMovementLock) return;
+        if (isDeviceMouse && !isRMBPressed) return;
+        if (isRMBPressed && !isLMBPressed)
         {
-            isRotating = true;
-            float mouseX = Input.GetAxis("Mouse X");
-            float mouseY = Input.GetAxis("Mouse Y");
+
+            float deviceMultiplier = Time.deltaTime;
+
+            freeLookVCam.m_XAxis.m_InputAxisValue = cameraMovement.x * speedMultiplier * deviceMultiplier;
+            freeLookVCam.m_YAxis.m_InputAxisValue = cameraMovement.y * speedMultiplier * deviceMultiplier;
+        }
+    }
+
+    private void HandleCursorLock()
+    {
+        if (isRMBPressed && Cursor.lockState != CursorLockMode.Locked)
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            StartCoroutine(DisableMouseForFrame());
+        }
+        else if (!isRMBPressed && Cursor.lockState == CursorLockMode.Locked)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+            freeLookVCam.m_XAxis.m_InputAxisValue = 0f;
+            freeLookVCam.m_YAxis.m_InputAxisValue = 0f;
+        }
+    }
+
+    private void HandleZoom()
+    {
+        if (!isRMBPressed)
+        {
+            float scrollInput = Mouse.current.scroll.y.ReadValue();
+            targetZoom -= scrollInput * zoomSpeed * Time.deltaTime;
+            targetZoom = Mathf.Clamp(targetZoom, minFOV, maxFOV);
+            freeLookVCam.m_Lens.FieldOfView = Mathf.Lerp(freeLookVCam.m_Lens.FieldOfView, targetZoom, Time.deltaTime * zoomSpeed);
+        }
+    }
+
+    private void HandleRotationPlayerAndCamera(Vector2 cameraMovement)
+    {
+        if (isRMBPressed && isLMBPressed && playerTransform != null)
+        {
             
-            targetRotation.y += mouseX * rotationSpeed;
-            targetRotation.x -= mouseY * rotationSpeed;
+            if (isResetting)
+            {
+                
+                float targetYRotation = playerTransform.eulerAngles.y;
+
+                
+                freeLookVCam.m_XAxis.Value = Mathf.LerpAngle(freeLookVCam.m_XAxis.Value, targetYRotation, Time.deltaTime * transitionSpeed);
+
+                
+                if (Mathf.Abs(Mathf.DeltaAngle(freeLookVCam.m_XAxis.Value, targetYRotation)) < 0.5f)
+                {
+                    isResetting = false; 
+                }
+            }
+
             
-            // Clamp vertical rotation to prevent camera flipping
-            targetRotation.x = Mathf.Clamp(targetRotation.x, -60f, 60f);
+            float deviceMultiplier = Time.deltaTime;
+            freeLookVCam.m_XAxis.m_InputAxisValue = cameraMovement.x * speedMultiplier * deviceMultiplier;
+            freeLookVCam.m_YAxis.m_InputAxisValue = cameraMovement.y * speedMultiplier * deviceMultiplier;
+
+            
+            Vector3 cameraForward = mainCamera.transform.forward;
+            cameraForward.y = 0; 
+
+            if (cameraForward != Vector3.zero)
+            {
+                Quaternion targetRotation = Quaternion.LookRotation(cameraForward);
+                playerTransform.rotation = Quaternion.Slerp(playerTransform.rotation, targetRotation, Time.deltaTime * playerRotationSpeed);
+            }
         }
         else
         {
-            isRotating = false;
-        }
-        
-        // Mouse wheel for zoom
-        float scrollWheel = Input.GetAxis("Mouse ScrollWheel");
-        if (scrollWheel != 0)
-        {
-            targetZoom -= scrollWheel * zoomSpeed;
-            targetZoom = Mathf.Clamp(targetZoom, minZoomDistance, maxZoomDistance);
+            
+            isResetting = true;
         }
     }
-    
-    private void UpdateCameraTransform()
+
+    private IEnumerator DisableMouseForFrame()
     {
-        // Smooth rotation
-        currentRotation = Vector3.Lerp(currentRotation, targetRotation, Time.deltaTime * smoothness);
-        
-        // Smooth zoom
-        currentZoom = Mathf.Lerp(currentZoom, targetZoom, Time.deltaTime * smoothness);
-        
-        UpdateCameraPosition();
-    }
-    
-    private void UpdateCameraPosition()
-    {
-        // Calculate rotation
-        Quaternion rotation = Quaternion.Euler(currentRotation.x, currentRotation.y, 0);
-        
-        // Calculate position
-        Vector3 targetPosition = transform.position + targetOffset;
-        Vector3 cameraPosition = targetPosition - (rotation * Vector3.forward * currentZoom);
-        
-        // Update camera transform
-        cameraTransform.position = cameraPosition;
-        cameraTransform.rotation = rotation;
-        
-        // Make camera look at target
-        cameraTransform.LookAt(targetPosition);
+        cameraMovementLock = true;
+        yield return new WaitForEndOfFrame();
+        cameraMovementLock = false;
     }
 }
